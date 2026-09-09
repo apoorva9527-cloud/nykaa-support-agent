@@ -2,3 +2,5 @@
 __pycache__/
 .env
 chroma_db/
+logs/
+src/agent_backup.py
