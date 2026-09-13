@@ -11,45 +11,31 @@ class RetryState(TypedDict, total=False):
     result: str
 
 
-# =========================================================
-# RETRY CONFIGURATION
-# =========================================================
-
 MAX_ATTEMPTS = 4
 INITIAL_INTERVAL = 0.5
 MAX_INTERVAL = 2.0
-JITTER = 0.2
+JITTER = 0.1
 
-
-# =========================================================
-# SIMULATED TRANSIENT OPERATION
-# =========================================================
 
 def unreliable_operation(attempt: int):
     print(f"Attempt {attempt}")
 
-    # First 2 attempts fail transiently.
+    # Simulate transient failures on the first two attempts.
     if attempt < 3:
         print("Transient failure occurred.")
         raise RuntimeError("Simulated transient service failure")
 
     print("Transient failure recovered.")
-
     return {
         "status": "success",
-        "result": "Operation completed after exponential-backoff retry.",
+        "result": "Operation completed after retry.",
     }
 
-
-# =========================================================
-# RETRY NODE
-# =========================================================
 
 def retry_node(state: RetryState):
     last_error = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-
         try:
             result = unreliable_operation(attempt)
 
@@ -62,97 +48,49 @@ def retry_node(state: RetryState):
         except RuntimeError as error:
             last_error = error
 
-            if attempt >= MAX_ATTEMPTS:
-                print("Maximum retry attempts reached.")
-                break
+            if attempt < MAX_ATTEMPTS:
+                base_delay = min(
+                    INITIAL_INTERVAL * (2 ** (attempt - 1)),
+                    MAX_INTERVAL,
+                )
 
-            # Exponential backoff:
-            # 0.5 -> 1.0 -> 2.0 -> capped at 2.0
-            base_interval = min(
-                INITIAL_INTERVAL * (2 ** (attempt - 1)),
-                MAX_INTERVAL,
-            )
+                jitter = random.uniform(0, JITTER)
+                delay = min(base_delay + jitter, MAX_INTERVAL)
 
-            # Random jitter in the range [-JITTER, +JITTER]
-            jitter_value = random.uniform(
-                -JITTER,
-                JITTER,
-            )
+                print(
+                    f"Retry {attempt}/{MAX_ATTEMPTS - 1} "
+                    f"after {delay:.2f} seconds "
+                    f"(exponential backoff + jitter)"
+                )
 
-            wait_time = max(
-                0.0,
-                base_interval + jitter_value,
-            )
+                time.sleep(delay)
 
-            print(
-                f"Retry scheduled: base={base_interval:.2f}s, "
-                f"jitter={jitter_value:+.2f}s, "
-                f"wait={wait_time:.2f}s"
-            )
-
-            time.sleep(wait_time)
+            else:
+                print(f"Maximum attempts reached: {MAX_ATTEMPTS}")
 
     raise last_error
 
 
-# =========================================================
-# LANGGRAPH
-# =========================================================
+builder = StateGraph(RetryState)
 
-def build_graph():
+builder.add_node("retry_operation", retry_node)
 
-    graph = StateGraph(RetryState)
+builder.add_edge(START, "retry_operation")
+builder.add_edge("retry_operation", END)
 
-    graph.add_node(
-        "retry_operation",
-        retry_node,
-    )
+graph = builder.compile()
 
-    graph.add_edge(
-        START,
-        "retry_operation",
-    )
-
-    graph.add_edge(
-        "retry_operation",
-        END,
-    )
-
-    return graph.compile()
-
-
-# =========================================================
-# DEMONSTRATION
-# =========================================================
 
 if __name__ == "__main__":
-
-    print("=" * 70)
-    print("RETRY POLICY / EXPONENTIAL BACKOFF DEMONSTRATION")
-    print("=" * 70)
-
-    print(f"Maximum attempts : {MAX_ATTEMPTS}")
-    print(f"Initial interval : {INITIAL_INTERVAL} seconds")
-    print(f"Maximum interval : {MAX_INTERVAL} seconds")
-    print(f"Jitter range     : +/- {JITTER} seconds")
+    print("RETRY POLICY DEMONSTRATION")
+    print(f"Maximum attempts: {MAX_ATTEMPTS}")
+    print(f"Initial interval: {INITIAL_INTERVAL} seconds")
+    print(f"Maximum interval: {MAX_INTERVAL} seconds")
+    print(f"Jitter: 0 to {JITTER} seconds")
     print()
 
-    graph = build_graph()
-
-    result = graph.invoke(
-        {
-            "attempts": 0,
-            "status": "pending",
-            "result": "",
-        }
-    )
+    result = graph.invoke({})
 
     print()
-    print("Final result:")
+    print("FINAL RESULT")
     print(result)
-
-    print()
-    print("=" * 70)
-    print("RETRY DEMONSTRATION PASSED")
-    print(f"Successful on attempt: {result['attempts']}")
-    print("=" * 70)
