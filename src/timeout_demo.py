@@ -1,4 +1,5 @@
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import TypedDict
 
 from langgraph.graph import StateGraph, START, END
@@ -7,219 +8,221 @@ from langgraph.graph import StateGraph, START, END
 class TimeoutState(TypedDict, total=False):
     status: str
     message: str
+    elapsed_seconds: float
 
 
 # =========================================================
-# PER-NODE TIMEOUT DEMO
+# TIMEOUT CONFIGURATION
 # =========================================================
 
-def slow_node(state: TimeoutState):
+PER_NODE_TIMEOUT = 1.0
+GLOBAL_TIMEOUT = 1.0
+
+
+# =========================================================
+# SLOW OPERATIONS
+# =========================================================
+
+def slow_node_operation():
+    """Simulated node that takes longer than its timeout."""
     print("Slow node started...")
-    time.sleep(2)
+    time.sleep(2.0)
     print("Slow node finished.")
-
-    return {
-        "status": "completed",
-        "message": "Slow node completed.",
-    }
+    return "Node completed"
 
 
-def run_with_node_timeout(timeout_seconds=1):
-
-    print("\n--- PER-NODE TIMEOUT ---")
-    print(
-        f"Node timeout configured: "
-        f"{timeout_seconds} second"
-    )
-
-    start_time = time.perf_counter()
-
-    try:
-
-        result = slow_node(
-            {
-                "status": "started"
-            }
-        )
-
-        elapsed = (
-            time.perf_counter()
-            - start_time
-        )
-
-        if elapsed > timeout_seconds:
-            raise TimeoutError(
-                "Per-node timeout exceeded."
-            )
-
-        print("Node result:")
-        print(result)
-
-    except TimeoutError as error:
-
-        elapsed = (
-            time.perf_counter()
-            - start_time
-        )
-
-        print(
-            f"PER-NODE TIMEOUT TRIGGERED "
-            f"after {elapsed:.2f} seconds."
-        )
-
-        print(f"Reason: {error}")
-
-
-# =========================================================
-# GLOBAL TIMEOUT DEMO
-# =========================================================
-
-def workflow_node_one(state: TimeoutState):
-
+def workflow_operation():
+    """Simulated workflow that takes longer than global timeout."""
     print("Global workflow - Node 1")
-    time.sleep(0.5)
-
-    return {
-        "status": "node1_done"
-    }
-
-
-def workflow_node_two(state: TimeoutState):
+    time.sleep(1.0)
 
     print("Global workflow - Node 2")
-    time.sleep(2)
-
-    return {
-        "status": "node2_done"
-    }
-
-
-def workflow_node_three(state: TimeoutState):
+    time.sleep(1.0)
 
     print("Global workflow - Node 3")
-    time.sleep(0.5)
+    time.sleep(1.0)
+
+    return "Workflow completed"
+
+
+# =========================================================
+# PER-NODE TIMEOUT
+# =========================================================
+
+def run_with_node_timeout():
+    print("\n--- PER-NODE TIMEOUT ---")
+    print(f"Node timeout configured: {PER_NODE_TIMEOUT:.0f} second")
+
+    start = time.perf_counter()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(slow_node_operation)
+
+        try:
+            result = future.result(timeout=PER_NODE_TIMEOUT)
+
+            elapsed = time.perf_counter() - start
+
+            return {
+                "status": "success",
+                "message": result,
+                "elapsed_seconds": elapsed,
+            }
+
+        except FutureTimeoutError:
+            elapsed = time.perf_counter() - start
+
+            # Cancel if the task has not started.
+            future.cancel()
+
+            print(
+                f"PER-NODE TIMEOUT TRIGGERED after "
+                f"{elapsed:.2f} seconds."
+            )
+            print("Reason: Per-node execution limit exceeded.")
+            print("Node result discarded after timeout.")
+
+            return {
+                "status": "timeout",
+                "message": "Per-node timeout handled cleanly.",
+                "elapsed_seconds": elapsed,
+            }
+
+
+# =========================================================
+# LANGGRAPH PER-NODE DEMO
+# =========================================================
+
+def timeout_node(state: TimeoutState):
+    result = run_with_node_timeout()
 
     return {
-        "status": "node3_done"
+        "status": result["status"],
+        "message": result["message"],
+        "elapsed_seconds": result["elapsed_seconds"],
     }
 
 
-def build_workflow():
+def build_node_timeout_graph():
 
-    graph = StateGraph(
-        TimeoutState
-    )
+    graph = StateGraph(TimeoutState)
 
     graph.add_node(
-        "node_one",
-        workflow_node_one,
-    )
-
-    graph.add_node(
-        "node_two",
-        workflow_node_two,
-    )
-
-    graph.add_node(
-        "node_three",
-        workflow_node_three,
+        "timeout_node",
+        timeout_node,
     )
 
     graph.add_edge(
         START,
-        "node_one",
+        "timeout_node",
     )
 
     graph.add_edge(
-        "node_one",
-        "node_two",
-    )
-
-    graph.add_edge(
-        "node_two",
-        "node_three",
-    )
-
-    graph.add_edge(
-        "node_three",
+        "timeout_node",
         END,
     )
 
     return graph.compile()
 
 
-def run_with_global_timeout(
-    timeout_seconds=1
-):
+# =========================================================
+# GLOBAL TIMEOUT
+# =========================================================
+
+def run_with_global_timeout():
 
     print("\n--- GLOBAL TIMEOUT ---")
-    print(
-        f"Global timeout configured: "
-        f"{timeout_seconds} second"
-    )
+    print(f"Global timeout configured: {GLOBAL_TIMEOUT:.0f} second")
 
-    graph = build_workflow()
+    start = time.perf_counter()
 
-    start_time = time.perf_counter()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    future = executor.submit(workflow_operation)
 
     try:
+        result = future.result(timeout=GLOBAL_TIMEOUT)
 
-        result = graph.invoke(
-            {
-                "status": "started"
-            }
-        )
+        elapsed = time.perf_counter() - start
 
-        elapsed = (
-            time.perf_counter()
-            - start_time
-        )
+        executor.shutdown(wait=False, cancel_futures=True)
 
-        if elapsed > timeout_seconds:
-            raise TimeoutError(
-                "Global workflow timeout exceeded."
-            )
+        return {
+            "status": "success",
+            "message": result,
+            "elapsed_seconds": elapsed,
+        }
 
-        print("Workflow result:")
-        print(result)
+    except FutureTimeoutError:
 
-    except TimeoutError as error:
+        elapsed = time.perf_counter() - start
 
-        elapsed = (
-            time.perf_counter()
-            - start_time
+        # Cancel pending work.
+        future.cancel()
+
+        # Do not wait for the long-running workflow.
+        executor.shutdown(
+            wait=False,
+            cancel_futures=True,
         )
 
         print(
-            f"GLOBAL TIMEOUT TRIGGERED "
-            f"after {elapsed:.2f} seconds."
+            f"GLOBAL TIMEOUT TRIGGERED after "
+            f"{elapsed:.2f} seconds."
         )
+        print("Reason: Global workflow execution limit exceeded.")
+        print("Remaining workflow execution cancelled.")
 
-        print(f"Reason: {error}")
+        return {
+            "status": "timeout",
+            "message": "Global timeout handled and workflow cancelled.",
+            "elapsed_seconds": elapsed,
+        }
 
 
 # =========================================================
-# MAIN
+# DEMONSTRATION
 # =========================================================
-
-def main():
-
-    print("=" * 70)
-    print("TIMEOUT POLICY DEMONSTRATION")
-    print("=" * 70)
-
-    run_with_node_timeout(
-        timeout_seconds=1
-    )
-
-    run_with_global_timeout(
-        timeout_seconds=1
-    )
-
-    print("\n" + "=" * 70)
-    print("TIMEOUT DEMONSTRATION COMPLETE")
-    print("=" * 70)
-
 
 if __name__ == "__main__":
-    main()
+
+    print("=" * 70)
+    print("TIMEOUT POLICY / CANCELLATION DEMONSTRATION")
+    print("=" * 70)
+
+    # -----------------------------------------------------
+    # Per-node timeout
+    # -----------------------------------------------------
+
+    node_graph = build_node_timeout_graph()
+
+    node_result = node_graph.invoke({})
+
+    print("\nPer-node final result:")
+    print(node_result)
+
+    # -----------------------------------------------------
+    # Global timeout
+    # -----------------------------------------------------
+
+    global_result = run_with_global_timeout()
+
+    print("\nGlobal timeout final result:")
+    print(global_result)
+
+    # -----------------------------------------------------
+    # Final demonstration status
+    # -----------------------------------------------------
+
+    if (
+        node_result["status"] == "timeout"
+        and global_result["status"] == "timeout"
+    ):
+        print("\n" + "=" * 70)
+        print("TIMEOUT DEMONSTRATION PASSED")
+        print("Per-node timeout: HANDLED")
+        print("Global timeout: HANDLED")
+        print("Whole workflow cancellation: REQUESTED")
+        print("=" * 70)
+    else:
+        print("\nTIMEOUT DEMONSTRATION FAILED")

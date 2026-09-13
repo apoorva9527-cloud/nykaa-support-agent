@@ -1,3 +1,4 @@
+import random
 import time
 from typing import TypedDict
 
@@ -10,41 +11,47 @@ class RetryState(TypedDict, total=False):
     result: str
 
 
-MAX_RETRIES = 3
+# =========================================================
+# RETRY CONFIGURATION
+# =========================================================
+
+MAX_ATTEMPTS = 4
+INITIAL_INTERVAL = 0.5
+MAX_INTERVAL = 2.0
+JITTER = 0.2
 
 
-def unreliable_operation(attempt):
+# =========================================================
+# SIMULATED TRANSIENT OPERATION
+# =========================================================
+
+def unreliable_operation(attempt: int):
     print(f"Attempt {attempt}")
 
+    # First 2 attempts fail transiently.
     if attempt < 3:
         print("Transient failure occurred.")
-
-        raise RuntimeError(
-            "Simulated transient service failure"
-        )
+        raise RuntimeError("Simulated transient service failure")
 
     print("Transient failure recovered.")
 
     return {
         "status": "success",
-        "result": "Operation completed after retry.",
+        "result": "Operation completed after exponential-backoff retry.",
     }
 
 
-def retry_node(state: RetryState):
+# =========================================================
+# RETRY NODE
+# =========================================================
 
+def retry_node(state: RetryState):
     last_error = None
 
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1,
-    ):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
 
         try:
-
-            result = unreliable_operation(
-                attempt
-            )
+            result = unreliable_operation(attempt)
 
             return {
                 "attempts": attempt,
@@ -53,27 +60,44 @@ def retry_node(state: RetryState):
             }
 
         except RuntimeError as error:
-
             last_error = error
 
-            if attempt < MAX_RETRIES:
+            if attempt >= MAX_ATTEMPTS:
+                print("Maximum retry attempts reached.")
+                break
 
-                print(
-                    f"Retry {attempt} of "
-                    f"{MAX_RETRIES - 1}"
-                )
+            # Exponential backoff:
+            # 0.5 -> 1.0 -> 2.0 -> capped at 2.0
+            base_interval = min(
+                INITIAL_INTERVAL * (2 ** (attempt - 1)),
+                MAX_INTERVAL,
+            )
 
-                time.sleep(0.5)
+            # Random jitter in the range [-JITTER, +JITTER]
+            jitter_value = random.uniform(
+                -JITTER,
+                JITTER,
+            )
 
-            else:
+            wait_time = max(
+                0.0,
+                base_interval + jitter_value,
+            )
 
-                print(
-                    f"Retry {attempt} of "
-                    f"{MAX_RETRIES}"
-                )
+            print(
+                f"Retry scheduled: base={base_interval:.2f}s, "
+                f"jitter={jitter_value:+.2f}s, "
+                f"wait={wait_time:.2f}s"
+            )
+
+            time.sleep(wait_time)
 
     raise last_error
 
+
+# =========================================================
+# LANGGRAPH
+# =========================================================
 
 def build_graph():
 
@@ -97,47 +121,38 @@ def build_graph():
     return graph.compile()
 
 
-def main():
+# =========================================================
+# DEMONSTRATION
+# =========================================================
+
+if __name__ == "__main__":
 
     print("=" * 70)
-    print(
-        "RETRY POLICY / TRANSIENT FAILURE DEMONSTRATION"
-    )
+    print("RETRY POLICY / EXPONENTIAL BACKOFF DEMONSTRATION")
     print("=" * 70)
+
+    print(f"Maximum attempts : {MAX_ATTEMPTS}")
+    print(f"Initial interval : {INITIAL_INTERVAL} seconds")
+    print(f"Maximum interval : {MAX_INTERVAL} seconds")
+    print(f"Jitter range     : +/- {JITTER} seconds")
+    print()
 
     graph = build_graph()
 
     result = graph.invoke(
         {
             "attempts": 0,
-            "status": "started",
+            "status": "pending",
+            "result": "",
         }
     )
 
-    print("\nFinal result:")
+    print()
+    print("Final result:")
     print(result)
 
-    print("\n" + "=" * 70)
-
-    if result.get("status") == "success":
-
-        print(
-            "RETRY DEMONSTRATION PASSED"
-        )
-
-        print(
-            f"Successful on attempt: "
-            f"{result.get('attempts')}"
-        )
-
-    else:
-
-        print(
-            "RETRY DEMONSTRATION FAILED"
-        )
-
+    print()
     print("=" * 70)
-
-
-if __name__ == "__main__":
-    main()
+    print("RETRY DEMONSTRATION PASSED")
+    print(f"Successful on attempt: {result['attempts']}")
+    print("=" * 70)
